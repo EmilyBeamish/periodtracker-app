@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,6 +20,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -32,11 +35,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
@@ -63,6 +69,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ModifierLocalBeyondBoundsLayout
 import androidx.compose.ui.platform.LocalContext
@@ -97,9 +104,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
 import java.time.temporal.ChronoUnit
+import java.util.Locale
 
 private var periodLength = 5
 // DATABASE
@@ -141,6 +152,9 @@ interface PeriodDao {
 
     @Query("DELETE FROM periods")
     suspend fun clearAllPeriods()
+
+    @Query("SELECT * FROM periods WHERE id= :periodId")
+    suspend fun getPeriodById(periodId: Int): PeriodEntity?
 }
 
 // EVERY DATA CLASS USED
@@ -188,6 +202,9 @@ class PeriodRepository(private val periodDao: PeriodDao) {
     suspend fun delete(period: PeriodEntity) {
         periodDao.deletePeriod(period)
     }
+    suspend fun getPeriodById(periodId: Int): PeriodEntity? {
+        return periodDao.getPeriodById(periodId)
+    }
     suspend fun getCurrentPeriod(todayDate: String): PeriodEntity? {
         return periodDao.getCurrentPeriod(todayDate)
     }
@@ -219,6 +236,9 @@ class PeriodViewModel(private val repository: PeriodRepository) : ViewModel() {
 
     suspend fun deletePeriod(period: PeriodEntity) = withContext(Dispatchers.IO) {
         repository.delete(period)
+    }
+    suspend fun getPeriodById(periodId: Int): PeriodEntity? = withContext(Dispatchers.IO) {
+        repository.getPeriodById(periodId)
     }
 
     suspend fun getLatestPeriod(): PeriodEntity? = withContext(Dispatchers.IO) {
@@ -283,9 +303,16 @@ fun PeriodTrackerApp(themeState: ThemeState) {
             ) {
                 composable("Home") { HomeScreen(navController) }
                 composable("AddPeriod") { AddPeriodScreen(navController) }
-                composable("PeriodHistory") { PeriodHistoryScreen() }
+                composable("PeriodHistory") { PeriodHistoryScreen(navController) }
                 composable("Statistics") { StatisticsScreen() }
                 composable("Settings") { SettingsScreen(themeState) }
+                composable("Calendar") { CalendarScreen(navController) }
+                composable("PeriodDetail/{periodId}") { backStackEntry ->
+                    val periodId = backStackEntry.arguments?.getString("periodId")?.toIntOrNull()
+                    if (periodId != null) {
+                        PeriodDetailScreen(navController, periodId)
+                    }
+                }
             }
         }
     }
@@ -294,6 +321,8 @@ fun PeriodTrackerApp(themeState: ThemeState) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TopAppBar(navController: NavController) {
+    val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+    val showBackButton = currentRoute?.startsWith("PeriodDetail") == true
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
             containerColor = MaterialTheme.colorScheme.primary,
@@ -301,6 +330,18 @@ fun TopAppBar(navController: NavController) {
             actionIconContentColor = MaterialTheme.colorScheme.onPrimary,
             navigationIconContentColor = MaterialTheme.colorScheme.onPrimary
         ),
+        navigationIcon = {
+            if (showBackButton) {
+                IconButton(onClick = {navController.popBackStack()}){
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Go Back",
+                        tint = MaterialTheme.colorScheme.onPrimary
+                    )
+                }
+            }
+        },
+
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
@@ -363,6 +404,22 @@ fun BottomNavBar(navController: NavController) {
                 indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
             )
         )
+        NavigationBarItem(
+            selected = currentRoute == "Calendar",
+            onClick = { navController.navigate("Calendar")},
+            icon = {
+                Icon(
+                    Icons.Default.DateRange,
+                    contentDescription = "Calendar Icon",
+                    tint = if (currentRoute == "Calendar") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            label = {
+                Text("Calendar",
+                    color = if (currentRoute == "Calendar") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        )
 
         NavigationBarItem(
             selected = currentRoute == "AddPeriod",
@@ -387,6 +444,23 @@ fun BottomNavBar(navController: NavController) {
                 unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
                 indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
             )
+        )
+        NavigationBarItem(
+            selected = currentRoute == "Statistics",
+            onClick = { navController.navigate("Statistics") },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Statistics Icon",
+                    tint = if (currentRoute == "Statistics") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            label = {
+                Text(
+                    "Stats",
+                    color = if (currentRoute == "Statistics") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
         )
 
         NavigationBarItem(
@@ -497,9 +571,12 @@ fun HomeScreen(navController: NavController) {
 
         // Last Period Section
         if (periods.isNotEmpty()) {
-             val lastPeriod = periods.first()
+            val lastPeriodItem = periods.first() // Use a different variable name
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth()
+                    .clickable {
+                        navController.navigate("PeriodDetail/${lastPeriodItem.id}")
+                    },
                 shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -515,13 +592,13 @@ fun HomeScreen(navController: NavController) {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "${lastPeriod!!.startDate} - ${lastPeriod!!.endDate}",
+                        "${lastPeriodItem.startDate} - ${lastPeriodItem.endDate}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (lastPeriod!!.notes.isNotEmpty()) {
+                    if (lastPeriodItem.notes.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Notes: ${lastPeriod!!.notes}",
+                            "Notes: ${lastPeriodItem.notes}",
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -618,7 +695,223 @@ fun CurrentStatusCard(
         }
     }
 }
+@Composable
+fun CalendarScreen(navController: NavController){
+    val context = LocalContext.current
+    val repository = remember { PeriodRepository(PeriodDatabase.getDatabase(context).periodDao()) }
+    val factory = remember { ViewModelFactory(repository) }
+    val viewModel: PeriodViewModel = viewModel(factory = factory)
+    val periods by viewModel.allPeriods.collectAsState(initial = emptyList())
+    var currentMonth by remember { mutableStateOf(YearMonth.now())}
+    var selectedDate by remember { mutableStateOf<LocalDate?>(null) }
+    val daysInMonth = remember(currentMonth){
+        (1..currentMonth.lengthOfMonth()).map { day ->
+            currentMonth.atDay(day)
+        }
+    }
+    val firstDayOfMonth = remember(currentMonth) {
+        currentMonth.atDay(1).dayOfWeek
+    }
 
+    // Calculate days from previous month for padding
+    val daysFromPrevMonth = remember(firstDayOfMonth) {
+        val offset = firstDayOfMonth.value - 1
+        if (offset > 0) {
+            val prevMonth = currentMonth.minusMonths(1)
+            (prevMonth.lengthOfMonth() - offset + 1..prevMonth.lengthOfMonth()).map { day ->
+                prevMonth.atDay(day)
+            }
+        } else {
+            emptyList()
+        }
+    }
+
+    val allDays = remember(daysFromPrevMonth, daysInMonth) {
+        daysFromPrevMonth + daysInMonth
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        // Month selector header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = { currentMonth = currentMonth.minusMonths(1) }
+            ) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Previous month")
+            }
+
+            Text(
+                text = currentMonth.month.getDisplayName(TextStyle.FULL, Locale.getDefault()) + " " + currentMonth.year,
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            IconButton(
+                onClick = { currentMonth = currentMonth.plusMonths(1) }
+            ) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Next month", modifier = Modifier.rotate(180f))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Days of week header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            DayOfWeek.values().forEach { dayOfWeek ->
+                Text(
+                    text = dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault()),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Calendar grid - FIXED: Using correct index logic
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(7),
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            items(allDays.size) { index ->
+                val currentDate = allDays[index]  // Changed variable name to avoid conflict
+                val isCurrentMonth = index >= daysFromPrevMonth.size  // Fixed logic
+
+                DayCell(
+                    date = currentDate,
+                    isCurrentMonth = isCurrentMonth,
+                    isSelected = selectedDate == currentDate,
+                    periodOnDay = periods.find { period ->
+                        isDateInPeriod(currentDate, period.startDate, period.endDate)
+                    },
+                    onClick = { selectedDate = currentDate }
+                )
+            }
+        }
+
+        // Selected date details
+        selectedDate?.let { date ->
+            Spacer(modifier = Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        "${date.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))}",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    val periodOnSelectedDate = periods.find { period ->
+                        isDateInPeriod(date, period.startDate, period.endDate)
+                    }
+
+                    if (periodOnSelectedDate != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "Period day: ${getDayOfPeriod(date, periodOnSelectedDate.startDate)} of ${calculatePeriodDuration(periodOnSelectedDate.startDate, periodOnSelectedDate.endDate)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (periodOnSelectedDate.notes.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "Notes: ${periodOnSelectedDate.notes}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "No period on this date",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DayCell(
+    date: LocalDate,
+    isCurrentMonth: Boolean,
+    isSelected: Boolean,
+    periodOnDay: PeriodEntity?,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .background(
+                color = when {
+                    isSelected -> MaterialTheme.colorScheme.primary
+                    periodOnDay != null -> MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                    else -> Color.Transparent
+                },
+                shape = RoundedCornerShape(8.dp)
+            )
+            .clickable { onClick() }
+            .padding(4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = date.dayOfMonth.toString(),
+                color = when {
+                    isSelected -> MaterialTheme.colorScheme.onPrimary
+                    isCurrentMonth -> MaterialTheme.colorScheme.onSurface
+                    else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                },
+                style = MaterialTheme.typography.bodyMedium
+            )
+
+            if (periodOnDay != null) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Icon(
+                    imageVector = Icons.Default.Favorite,
+                    contentDescription = "Period day",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(12.dp)
+                )
+            }
+        }
+    }
+}
+
+// Helper functions
+fun isDateInPeriod(date: LocalDate, startDateStr: String, endDateStr: String): Boolean {
+    val formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy")
+    val startDate = LocalDate.parse(startDateStr, formatter)
+    val endDate = LocalDate.parse(endDateStr, formatter)
+    return !date.isBefore(startDate) && !date.isAfter(endDate)
+}
+
+fun getDayOfPeriod(date: LocalDate, startDateStr: String): Int {
+    val formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy")
+    val startDate = LocalDate.parse(startDateStr, formatter)
+    return ChronoUnit.DAYS.between(startDate, date).toInt() + 1
+}
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddPeriodScreen(navController: NavController) {
@@ -844,7 +1137,7 @@ fun AddPeriodScreen(navController: NavController) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(100.dp),
-                    placeholder = { Text("Enter any additional notes here") },
+                    placeholder = { Text("Enter your symptoms, or anything related to your period") },
                     colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = MaterialTheme.colorScheme.primary,
                         unfocusedBorderColor = MaterialTheme.colorScheme.outline,
@@ -929,7 +1222,7 @@ fun FlowSelector(
 }
 
 @Composable
-fun PeriodHistoryScreen() {
+fun PeriodHistoryScreen(navController: NavController) {
     val context = LocalContext.current
     val repository = remember { PeriodRepository(PeriodDatabase.getDatabase(context).periodDao()) }
     val factory = remember { ViewModelFactory(repository) }
@@ -976,6 +1269,9 @@ fun PeriodHistoryScreen() {
                 items(periods) { period ->
                     PeriodCard(
                         period = period,
+                        onClick = {
+                            navController.navigate("PeriodDetail/${period.id}")
+                        },
                         onDelete = {
                             viewModel.viewModelScope.launch {
                                 viewModel.deletePeriod(period)
@@ -988,14 +1284,19 @@ fun PeriodHistoryScreen() {
     }
 }
 
+
 @Composable
 fun PeriodCard(
     period: PeriodEntity,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth()
+            .clickable { onClick()},
         shape = RoundedCornerShape(12.dp),
+
+
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         )
@@ -1017,10 +1318,21 @@ fun PeriodCard(
                         color = MaterialTheme.colorScheme.onSurface,
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "Flow: ${"*".repeat(period.flowType)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Flow: ",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        for (i in 1..period.flowType) {
+                            Icon(
+                                imageVector = Icons.Default.FavoriteBorder,
+                                contentDescription = "Heart Icon",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
                 }
 
                 IconButton(
@@ -1045,6 +1357,118 @@ fun PeriodCard(
         }
     }
 }
+@Composable
+fun PeriodDetailScreen(navController: NavController, periodId: Int) {
+    val context = LocalContext.current
+    val repository = remember { PeriodRepository(PeriodDatabase.getDatabase(context).periodDao()) }
+    val factory = remember { ViewModelFactory(repository) }
+    val viewModel: PeriodViewModel = viewModel(factory = factory)
+
+    var period by remember { mutableStateOf<PeriodEntity?>(null) }
+
+    LaunchedEffect(periodId) {
+        period = viewModel.getPeriodById(periodId)
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+    ) {
+        if (period != null) {
+            // Period Details Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        "Period Details",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Date Range
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Start Date:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(period!!.startDate, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("End Date:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(period!!.endDate, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Duration
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Duration:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${calculatePeriodDuration(period!!.startDate, period!!.endDate)} days",
+                            color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Flow Type
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Flow Type:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("*".repeat(period!!.flowType), color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Notes
+                    if (period!!.notes.isNotEmpty()) {
+                        Text("Notes:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(period!!.notes, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                }
+            }
+
+            // Add more statistics cards here as needed...
+
+        } else {
+            // Loading or error state
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Loading period details...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+// Helper function to calculate period duration
+fun calculatePeriodDuration(startDate: String, endDate: String): Int {
+    val startParts = startDate.split("/").map { it.toInt() }
+    val endParts = endDate.split("/").map { it.toInt() }
+
+    val start = LocalDate.of(startParts[2], startParts[1], startParts[0])
+    val end = LocalDate.of(endParts[2], endParts[1], endParts[0])
+
+    return ChronoUnit.DAYS.between(start, end).toInt() + 1
+}
+
+
 
 @Composable
 fun StatisticsScreen() {

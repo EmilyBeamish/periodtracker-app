@@ -33,12 +33,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -54,12 +57,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ModifierLocalBeyondBoundsLayout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -92,8 +97,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
+private var periodLength = 5
 // DATABASE
 @Entity(tableName = "periods")
 data class PeriodEntity(
@@ -180,6 +188,9 @@ class PeriodRepository(private val periodDao: PeriodDao) {
     suspend fun delete(period: PeriodEntity) {
         periodDao.deletePeriod(period)
     }
+    suspend fun getCurrentPeriod(todayDate: String): PeriodEntity? {
+        return periodDao.getCurrentPeriod(todayDate)
+    }
 
     suspend fun getLastPeriod(): PeriodEntity? {
         return periodDao.getLastPeriod()
@@ -212,6 +223,9 @@ class PeriodViewModel(private val repository: PeriodRepository) : ViewModel() {
 
     suspend fun getLatestPeriod(): PeriodEntity? = withContext(Dispatchers.IO) {
         repository.getLastPeriod()
+    }
+    suspend fun getCurrentPeriod(todayDate: String): PeriodEntity? = withContext(Dispatchers.IO) {
+        repository.getCurrentPeriod(todayDate)
     }
 
     suspend fun getAveragePeriodDuration(): Double? = withContext(Dispatchers.IO) {
@@ -411,13 +425,18 @@ fun HomeScreen(navController: NavController) {
 
     val periods by viewModel.allPeriods.collectAsState(initial = emptyList())
     var currentPeriod by remember { mutableStateOf<PeriodEntity?>(null) }
-    var currentDayofPeriod by remember { mutableStateOf<Int?>(null) }
-    var latestPeriod by remember { mutableStateOf<PeriodEntity?>(null) }
+    var currentDayOfPeriod by remember { mutableStateOf<Int?>(null) }
+    var lastPeriod by remember { mutableStateOf<PeriodEntity?>(null) }
 
     LaunchedEffect(periods) {
         val todayDate = LocalDate.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
         currentPeriod = viewModel.getCurrentPeriod(todayDate)
-        latestPeriod = viewModel.getLatestPeriod()
+        currentPeriod?.let { period ->
+            val startParts = period.startDate.split("/").map { it.toInt() }
+            val startDate = LocalDate.of(startParts[2], startParts[1], startParts[0])
+            val today = LocalDate.now()
+            currentDayOfPeriod = ChronoUnit.DAYS.between(startDate, today).toInt() + 1
+        }
     }
 
     Column(
@@ -451,7 +470,11 @@ fun HomeScreen(navController: NavController) {
         }
 
         // Current Status Card
-        CurrentStatusCard(periods)
+        CurrentStatusCard(
+            currentPeriod = currentPeriod,
+            currentDayOfPeriod = currentDayOfPeriod,
+            periodLength = periodLength
+        )
 
         // Add Period Button
         Button(
@@ -473,7 +496,8 @@ fun HomeScreen(navController: NavController) {
         }
 
         // Last Period Section
-        if (latestPeriod != null) {
+        if (periods.isNotEmpty()) {
+             val lastPeriod = periods.first()
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -491,13 +515,13 @@ fun HomeScreen(navController: NavController) {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "${latestPeriod!!.startDate} - ${latestPeriod!!.endDate}",
+                        "${lastPeriod!!.startDate} - ${lastPeriod!!.endDate}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (latestPeriod!!.notes.isNotEmpty()) {
+                    if (lastPeriod!!.notes.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Notes: ${latestPeriod!!.notes}",
+                            "Notes: ${lastPeriod!!.notes}",
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -530,7 +554,7 @@ fun calculateEndDate(startDate: String, periodLength: Int): String {
     var month = parts[1]
     var year = parts[2]
 
-    day += periodLength
+    day += (periodLength - 1)
     val daysInMonth = when (month) {
         1, 3, 5, 7, 8, 10, 12 -> 31
         4, 6, 9, 11 -> 30
@@ -551,7 +575,11 @@ fun calculateEndDate(startDate: String, periodLength: Int): String {
 }
 
 @Composable
-fun CurrentStatusCard(periods: List<PeriodEntity>) {
+fun CurrentStatusCard(
+    currentPeriod: PeriodEntity?,
+    currentDayOfPeriod: Int?,
+    periodLength: Int
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -568,14 +596,22 @@ fun CurrentStatusCard(periods: List<PeriodEntity>) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(8.dp))
-            if (periods.isEmpty()) {
+            if (currentPeriod != null && currentDayOfPeriod != null) {
                 Text(
-                    "No periods logged yet.",
+                    "Currently on period",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Day $currentDayOfPeriod of $periodLength",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Ends on ${calculateEndDate(currentPeriod.startDate, periodLength)}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
                 Text(
-                    "You have logged ${periods.size} periods.",
+                    "Your next predicted period is N/A",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -583,6 +619,7 @@ fun CurrentStatusCard(periods: List<PeriodEntity>) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddPeriodScreen(navController: NavController) {
     val context = LocalContext.current
@@ -592,8 +629,18 @@ fun AddPeriodScreen(navController: NavController) {
 
     var startDate by remember { mutableStateOf("") }
     var endDate by remember { mutableStateOf("") }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var showManualDateInput by remember { mutableStateOf(false) }
+    var manualDateInput by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
     var selectedFlowType by remember { mutableStateOf(3) }
+
+    // Calculate end date whenever start date changes
+    LaunchedEffect(startDate) {
+        if (startDate.isNotBlank()) {
+            endDate = calculateEndDate(startDate, periodLength)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -624,34 +671,129 @@ fun AddPeriodScreen(navController: NavController) {
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = startDate,
-                    onValueChange = { startDate = it },
-                    label = { Text("Start Date (DD/MM/YYYY)") },
+
+                // Date input button
+                Button(
+                    onClick = { showDatePicker = true },
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("DD/MM/YYYY") },
-                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                        focusedLabelColor = MaterialTheme.colorScheme.primary,
-                        cursorColor = MaterialTheme.colorScheme.primary
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
                     )
-                )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DateRange,
+                        contentDescription = "Calendar Icon",
+                        tint = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Select Start Date")
+                }
+
+                // Manual date input option
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = endDate,
-                    onValueChange = { endDate = it },
-                    label = { Text("End Date (DD/MM/YYYY)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("DD/MM/YYYY") },
-                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
-                        focusedLabelColor = MaterialTheme.colorScheme.primary,
-                        cursorColor = MaterialTheme.colorScheme.primary
+                TextButton(
+                    onClick = { showManualDateInput = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Or enter date manually")
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                if (startDate.isNotEmpty()) {
+                    Text(
+                        "Selected Date: $startDate",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("End Date: ${calculateEndDate(startDate, periodLength)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
+        }
+
+        // Manual date input dialog
+        if (showManualDateInput) {
+            AlertDialog(
+                onDismissRequest = { showManualDateInput = false },
+                title = { Text("Enter Start Date") },
+                text = {
+                    Column {
+                        Text("Enter date in DD/MM/YYYY format")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = manualDateInput,
+                            onValueChange = { manualDateInput = it },
+                            label = { Text("DD/MM/YYYY") },
+                            placeholder = { Text("e.g., 15/12/2024") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            // Basic date validation
+                            val datePattern = Regex("^\\d{2}/\\d{2}/\\d{4}$")
+                            if (manualDateInput.matches(datePattern)) {
+                                startDate = manualDateInput
+                                showManualDateInput = false
+                            }
+                        }
+                    ) {
+                        Text("OK")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showManualDateInput = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+
+        // Simple date picker dialog
+        if (showDatePicker) {
+            AlertDialog(
+                onDismissRequest = { showDatePicker = false },
+                title = { Text("Select Start Date") },
+                text = {
+                    Column {
+                        // For a real app, you would use a proper DatePicker here
+                        // This is a simplified version for demonstration
+                        Text("Recent dates:")
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Show recent dates as options
+                        val recentDates = listOf(
+                            LocalDate.now().minusDays(0).format(DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                            LocalDate.now().minusDays(1).format(DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                            LocalDate.now().minusDays(2).format(DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                            LocalDate.now().minusDays(3).format(DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                            LocalDate.now().minusDays(4).format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
+                        )
+
+                        recentDates.forEach { date ->
+                            TextButton(
+                                onClick = {
+                                    startDate = date
+                                    showDatePicker = false
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(date)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showDatePicker = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
 
         // Flow Type Card
@@ -741,10 +883,11 @@ fun AddPeriodScreen(navController: NavController) {
                 contentColor = MaterialTheme.colorScheme.onPrimary
             )
         ) {
-            Text("Save Period")
+            Text("Log Period")
         }
     }
 }
+
 
 @Composable
 fun FlowSelector(
@@ -986,14 +1129,16 @@ fun StatisticsScreen() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(themeState: ThemeState) {
     val context = LocalContext.current
     val repository = remember { PeriodRepository(PeriodDatabase.getDatabase(context).periodDao()) }
     val factory = remember { ViewModelFactory(repository) }
     val viewModel: PeriodViewModel = viewModel(factory = factory)
-
+    var expanded by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var periodLengthState by remember { mutableIntStateOf(periodLength) }  // Add this line
 
     // Add confirmation dialog
     if (showClearDialog) {
@@ -1138,7 +1283,61 @@ fun SettingsScreen(themeState: ThemeState) {
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Period Settings",
+                    style = MaterialTheme.typography.titleMedium
+                )
 
+                // Period Length Setting
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("Period Length (days)")
+                    Box {
+                        Button(
+                            onClick = { expanded = true },
+                            modifier = Modifier.width(80.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            )
+                        ) {
+                            Text(periodLengthState.toString())
+                        }
+                        DropdownMenu(
+                            expanded = expanded,  // Fixed typo: "expaned" to "expanded"
+                            onDismissRequest = { expanded = false }
+                        ) {
+                            (3..10).forEach { length ->
+                                DropdownMenuItem(
+                                    text = { Text("$length days") },
+                                    onClick = {
+                                        periodLengthState = length
+                                        periodLength = length  // Update the global variable
+                                        expanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(16.dp))
         // Clear Data Button
         Card(
             modifier = Modifier.fillMaxWidth(),
